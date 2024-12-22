@@ -158,13 +158,6 @@ int main() {
     ack_con.sin_port = htons(ACK_PORT_NO);
     ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
 
-    // Bind the ACK socket
-    if (bind(ack_sock, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
-        perror("Bind failed");
-        close(sockfd);
-        close(ack_sock);
-        exit(EXIT_FAILURE);
-    }
 
     printf("Waiting for file...\n");
     receive_file(sockfd, ack_sock, addr_con, ack_con);
