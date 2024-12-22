@@ -4,19 +4,19 @@ CFLAGS = -Wall -Wextra -Wpedantic -g
 LDFLAGS = -lcrypto -lz
 
 # Target executable names
-CLIENT = client
+SENDER = sender
 RECEIVER = receiver
 
 # Source files
-CLIENT_SRC = client.c
+SENDER_SRC = sender.c
 RECEIVER_SRC = receiver.c
 
 # Build all targets
-all: $(CLIENT) $(RECEIVER)
+all: $(SENDER) $(RECEIVER)
 
-# Build the client
-$(CLIENT): $(CLIENT_SRC)
-	$(CC) $(CFLAGS) -o $(CLIENT) $(CLIENT_SRC) $(LDFLAGS)
+# Build the SENDER
+$(SENDER): $(SENDER_SRC)
+	$(CC) $(CFLAGS) -o $(SENDER) $(SENDER_SRC) $(LDFLAGS)
 
 # Build the receiver
 $(RECEIVER): $(RECEIVER_SRC)
@@ -24,4 +24,4 @@ $(RECEIVER): $(RECEIVER_SRC)
 
 # Clean up generated files
 clean:
-	rm -f $(CLIENT) $(RECEIVER)
+	rm -f $(SENDER) $(RECEIVER)

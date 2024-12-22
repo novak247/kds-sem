@@ -12,7 +12,7 @@
 #define PACKET_MAX_SIZE 1024
 #define PACKET_MAX_DATA_SIZE 1024 - 2*sizeof(uint32_t) - sizeof(uint8_t) - sizeof(uint16_t)
 #define PORT_NO 15050
-#define IP_ADDRESS "192.168.1.178"
+#define IP_ADDRESS "192.168.0.19"
 #define TIMEOUT_SECONDS 2
 
 typedef struct {
