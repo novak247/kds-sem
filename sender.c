@@ -12,6 +12,7 @@
 #define PACKET_MAX_SIZE 1024
 #define PACKET_MAX_DATA_SIZE 1024 - 2*sizeof(uint32_t) - sizeof(uint8_t) - sizeof(uint16_t)
 #define PORT_NO 15050
+#define ACK_PORT_NO 15051
 #define IP_ADDRESS "192.168.0.19"
 #define TIMEOUT_SECONDS 2
 
@@ -49,7 +50,7 @@ void compute_file_md5(const char* file_name, char* hash_str) {
 }
 
 // Function to send a file using Stop-and-Wait protocol
-void send_file(const char* file_name, int sockfd, struct sockaddr_in addr_con) {
+void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
     FILE* fp = fopen(file_name, "rb");
     if (!fp) {
         perror("Failed to open file");
@@ -58,13 +59,14 @@ void send_file(const char* file_name, int sockfd, struct sockaddr_in addr_con) {
 
     Packet packet;
     int addrlen = sizeof(addr_con);
+    int ack_addrlen = sizeof(ack_con);
     uint32_t packet_number = 0;
     size_t bytes_read;
     char response[4];
     struct timeval timeout = {TIMEOUT_SECONDS, 0};
 
     // Set socket timeout
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+    if (setsockopt(ack_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         perror("Failed to set socket timeout");
         fclose(fp);
         exit(EXIT_FAILURE);
@@ -95,7 +97,7 @@ void send_file(const char* file_name, int sockfd, struct sockaddr_in addr_con) {
             sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
             printf("3\n");
             // Wait for ACK/NACK
-            int n = recvfrom(sockfd, response, sizeof(response), 0, (struct sockaddr*)&addr_con, &addrlen);
+            int n = recvfrom(ack_sock, response, sizeof(response), 0, (struct sockaddr*)&ack_con, &ack_addrlen);
             printf("4\n");
             if (n > 0 && strncmp(response, "ACK", 3) == 0) {
                 ack_received = 1;
@@ -125,8 +127,8 @@ void send_file(const char* file_name, int sockfd, struct sockaddr_in addr_con) {
 }
 
 int main() {
-    int sockfd;
-    struct sockaddr_in addr_con;
+    int sockfd, ack_sock;
+    struct sockaddr_in addr_con, ack_con;
 
     // Create socket
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -139,12 +141,24 @@ int main() {
     addr_con.sin_port = htons(PORT_NO);
     addr_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
 
+    // Create ack socket
+    ack_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (ack_sock < 0) {
+        perror("ACK socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    ack_con.sin_family = AF_INET;
+    ack_con.sin_port = htons(ACK_PORT_NO);
+    ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
+
     char file_name[256];
     printf("Enter the file name to send: ");
     scanf("%s", file_name);
 
-    send_file(file_name, sockfd, addr_con);
+    send_file(file_name, sockfd, ack_sock, addr_con, ack_con);
 
     close(sockfd);
+    close(ack_sock);
     return 0;
 }

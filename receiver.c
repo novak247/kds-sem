@@ -11,6 +11,7 @@
 
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)   
 #define PORT_NO 15050
+#define ACK_PORT_NO 15051
 #define SENDRECV_FLAG 0
 
 typedef struct {
@@ -47,7 +48,7 @@ void compute_file_md5(const char* file_name, char* hash_str) {
 }
 
 // Function to receive a file using Stop-and-Wait protocol
-void receive_file(int sockfd, struct sockaddr_in addr_con) {
+void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
     FILE* fp = fopen("received_file", "wb");
     if (!fp) {
         perror("Failed to open file for writing");
@@ -88,14 +89,14 @@ void receive_file(int sockfd, struct sockaddr_in addr_con) {
         if (computed_crc != packet.crc) {
             printf("crc exp: %d, crc calc: %d", computed_crc, packet.crc);
             printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
-            sendto(sockfd, "NACK", 4, 0, (struct sockaddr*)&addr_con, addrlen);
+            sendto(ack_sock, "NACK", 4, 0, (struct sockaddr*)&addr_con, addrlen);
             continue;   
         }
 
         // Handle duplicate packets
         if (packet.packet_number != expected_packet) {
             printf("Duplicate or out-of-order packet %u received. Sending ACK.\n", packet.packet_number);
-            sendto(sockfd, "ACK", 3, 0, (struct sockaddr*)&addr_con, addrlen);
+            sendto(ack_sock, "ACK", 3, 0, (struct sockaddr*)&addr_con, addrlen);
             continue;
         }
 
@@ -104,7 +105,7 @@ void receive_file(int sockfd, struct sockaddr_in addr_con) {
         printf("Packet %u received and written successfully. Sending ACK.\n", packet.packet_number);
 
         // Send ACK
-        sendto(sockfd, "ACK", 3, 0, (struct sockaddr*)&addr_con, addrlen);
+        sendto(ack_sock, "ACK", 3, 0, (struct sockaddr*)&addr_con, addrlen);
         expected_packet++;
     }
 
@@ -123,8 +124,8 @@ void receive_file(int sockfd, struct sockaddr_in addr_con) {
 }
 
 int main() {
-    int sockfd;
-    struct sockaddr_in addr_con;
+    int sockfd, ack_sock;
+    struct sockaddr_in addr_con, ack_con;
     // Create socket
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -143,9 +144,30 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    // Create ACK/NACK socket
+    ack_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (ack_sock < 0) {
+        perror("ACK socket creation failed");
+        close(ack_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    ack_con.sin_family = AF_INET;
+    ack_con.sin_port = htons(ACK_PORT_NO);
+    ack_con.sin_addr.s_addr = INADDR_ANY;
+
+    // Bind the ACK socket
+    if (bind(ack_sock, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
+        perror("Bind failed");
+        close(sockfd);
+        close(ack_sock);
+        exit(EXIT_FAILURE);
+    }
+
     printf("Waiting for file...\n");
-    receive_file(sockfd, addr_con);
+    receive_file(sockfd, ack_sock, addr_con, ack_con);
 
     close(sockfd);
+    close(ack_sock);
     return 0;
 }
