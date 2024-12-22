@@ -11,9 +11,9 @@
 
 #define PACKET_MAX_SIZE 1024
 #define PACKET_MAX_DATA_SIZE 1024 - 2*sizeof(uint32_t) - sizeof(uint8_t) - sizeof(uint16_t)
-#define PORT_NO 15050
-#define ACK_PORT_NO 15051
-#define IP_ADDRESS "192.168.0.19"
+#define PORT_NO 14000 // source port v data (net derper)
+#define ACK_PORT_NO 15001 // target port v ack (net derper)
+#define IP_ADDRESS "127.0.0.1"
 #define TIMEOUT_SECONDS 2
 
 typedef struct {
@@ -152,7 +152,7 @@ int main() {
     ack_con.sin_port = htons(ACK_PORT_NO);
     ack_con.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(ack_sock, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
+    if (bind(sockfd, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
         perror("Bind failed");
         close(sockfd);
         close(ack_sock);
@@ -163,7 +163,7 @@ int main() {
     printf("Enter the file name to send: ");
     scanf("%s", file_name);
 
-    send_file(file_name, sockfd, ack_sock, addr_con, ack_con);
+    send_file(file_name, sockfd, sockfd, addr_con, ack_con);
 
     close(sockfd);
     close(ack_sock);

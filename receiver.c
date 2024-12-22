@@ -10,9 +10,9 @@
 #include <openssl/md5.h>  // For file hash
 
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)   
-#define PORT_NO 15050
-#define ACK_PORT_NO 15051
-#define IP_ADDRESS "192.168.0.20"
+#define PORT_NO 15000 // target port v data (net derper)
+#define ACK_PORT_NO 14001 // source port v ack (net derper)
+#define IP_ADDRESS "192.168.0.20" // target host name v ack (net derper)
 #define SENDRECV_FLAG 0
 
 typedef struct {
