@@ -150,7 +150,14 @@ int main() {
 
     ack_con.sin_family = AF_INET;
     ack_con.sin_port = htons(ACK_PORT_NO);
-    ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
+    ack_con.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(ack_sock, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
+        perror("Bind failed");
+        close(sockfd);
+        close(ack_sock);
+        exit(EXIT_FAILURE);
+    }
 
     char file_name[256];
     printf("Enter the file name to send: ");
