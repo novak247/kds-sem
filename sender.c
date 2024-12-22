@@ -98,7 +98,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
             printf("3\n");
             // Wait for ACK/NACK
             int n = recvfrom(ack_sock, response, sizeof(response), 0, (struct sockaddr*)&ack_con, &ack_addrlen);
-            printf("4\n");
+            printf("n %d\n", n);
             if (n > 0 && strncmp(response, "ACK", 3) == 0) {
                 ack_received = 1;
                 printf("Packet %u: ACK received\n", packet_number);

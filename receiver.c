@@ -12,6 +12,7 @@
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)   
 #define PORT_NO 15050
 #define ACK_PORT_NO 15051
+#define IP_ADDRESS "192.168.0.20"
 #define SENDRECV_FLAG 0
 
 typedef struct {
@@ -155,7 +156,7 @@ int main() {
 
     ack_con.sin_family = AF_INET;
     ack_con.sin_port = htons(ACK_PORT_NO);
-    ack_con.sin_addr.s_addr = INADDR_ANY;
+    ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
 
     // Bind the ACK socket
     if (bind(ack_sock, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
