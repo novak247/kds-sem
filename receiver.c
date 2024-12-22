@@ -57,6 +57,7 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
 
     Packet packet;
     int addrlen = sizeof(addr_con);
+    int ack_addrlen = sizeof(ack_con);
     uint32_t expected_packet = 0;
     char file_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     char received_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
@@ -89,14 +90,14 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         if (computed_crc != packet.crc) {
             printf("crc exp: %d, crc calc: %d", computed_crc, packet.crc);
             printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
-            sendto(ack_sock, "NACK", 4, 0, (struct sockaddr*)&addr_con, addrlen);
+            sendto(ack_sock, "NACK", 4, 0, (struct sockaddr*)&ack_con, ack_addrlen);
             continue;   
         }
 
         // Handle duplicate packets
         if (packet.packet_number != expected_packet) {
             printf("Duplicate or out-of-order packet %u received. Sending ACK.\n", packet.packet_number);
-            sendto(ack_sock, "ACK", 3, 0, (struct sockaddr*)&addr_con, addrlen);
+            sendto(ack_sock, "ACK", 3, 0, (struct sockaddr*)&ack_con, ack_addrlen);
             continue;
         }
 
@@ -105,7 +106,7 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         printf("Packet %u received and written successfully. Sending ACK.\n", packet.packet_number);
 
         // Send ACK
-        sendto(ack_sock, "ACK", 3, 0, (struct sockaddr*)&addr_con, addrlen);
+        sendto(ack_sock, "ACK", 3, 0, (struct sockaddr*)&ack_con, ack_addrlen);
         expected_packet++;
     }
 
