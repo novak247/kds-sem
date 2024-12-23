@@ -15,6 +15,7 @@
 #define ACK_PORT_NO 15001 // target port v ack (net derper)
 #define IP_ADDRESS "127.0.0.1"
 #define TIMEOUT_SECONDS 2
+#define WINDOW_SIZE 5
 
 typedef struct {
     uint32_t packet_number;
@@ -105,6 +106,12 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     char response[4];
     struct timeval timeout = {TIMEOUT_SECONDS, 0};
 
+    Packet packets[WINDOW_SIZE];
+    int ack_received[WINDOW_SIZE] = {0};
+    unsigned int packet_number = 0;
+    int base = 0, next_seq_num = 0;
+    int bytes_read;
+
     // Set socket timeout
     if (setsockopt(ack_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         perror("Failed to set socket timeout");
@@ -134,35 +141,62 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
         tries++;
     }
 
+
+
+
+
+
     // Send file packets
-    while ((bytes_read = fread(packet.data, 1, PACKET_MAX_DATA_SIZE, fp)) > 0) {
-        packet.packet_number = packet_number;
-        packet.termination_flag = 0;
-        packet.data_size = bytes_read;
-        printf("%d \n", bytes_read);
-        printf("1\n");
-        printf("%d\n", sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data));
-        packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));//bytes_read
-        printf("crc: %d\n", packet.crc);
-        
-        printf("2\n");
-        int ack_received = 0;
-        while (!ack_received) {
+    while (base < WINDOW_SIZE || next_seq_num > base) {
+        // Fill window with packets
+        while (next_seq_num < base + WINDOW_SIZE && (bytes_read = fread(packets[next_seq_num % WINDOW_SIZE].data, 1, PACKET_MAX_DATA_SIZE, fp)) > 0) {
+            Packet *packet = &packets[next_seq_num % WINDOW_SIZE];
+            packet->packet_number = next_seq_num;
+            packet->termination_flag = 0;
+            packet->data_size = bytes_read;
+            packet->crc = crc32(0L, (const Bytef*)&packet->packet_number, 
+                                sizeof(packet->packet_number) + sizeof(packet->termination_flag) +
+                                sizeof(packet->data) + sizeof(packet->data_size));
+
+            ack_received[next_seq_num % WINDOW_SIZE] = 0;
+
             // Send the packet
-            sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
-            printf("3\n");
-            // Wait for ACK/NACK
-            int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
-            if (ack_flag == 1) {
-                ack_received = 1;
-                printf("Packet %u: ACK received\n", packet_number);
-            } else {
-                printf("Packet %u: Resending due to timeout or NACK\n", packet_number);
+            sendto(sockfd, packet, sizeof(Packet), 0, (struct sockaddr*)&addr_con, addrlen);
+            printf("Sent packet %u\n", packet->packet_number);
+
+            next_seq_num++;
+        }
+
+        // Receive ACKs for packets in the window
+        for (int i = 0; i < WINDOW_SIZE; i++) {
+            int packet_index = (base + i) % WINDOW_SIZE;
+
+            if (!ack_received[packet_index]) {
+                int ack_flag = receive_ack(ack_sock, ack_con, packets[packet_index].packet_number);
+
+                if (ack_flag == 1) {
+                    ack_received[packet_index] = 1;
+                    printf("Packet %u: ACK received\n", packets[packet_index].packet_number);
+                } else {
+                    // Resend the packet
+                    sendto(sockfd, &packets[packet_index], sizeof(Packet), 0, (struct sockaddr*)&addr_con, addrlen);
+                    printf("Packet %u: Resent due to timeout or NACK\n", packets[packet_index].packet_number);
+                }
             }
         }
 
-        packet_number++;
+        // Slide the window
+        while (ack_received[base % WINDOW_SIZE]) {
+            printf("Sliding window. Packet %u acknowledged.\n", packets[base % WINDOW_SIZE].packet_number);
+            ack_received[base % WINDOW_SIZE] = 0; // Clear acknowledgment for next window
+            base++;
+        }
     }
+
+
+
+
+    printf("All packets sent and acknowledged.\n");
     printf("5\n");
     // Send termination packet
     int termination_ack_received = 0;
@@ -194,6 +228,62 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
 
     printf("File transfer complete.\n");
     fclose(fp);
+}
+
+void selective_repeat(FILE *fp, int sockfd, struct sockaddr_in addr_con, socklen_t addrlen, int ack_sock, struct sockaddr_in ack_con) {
+    Packet packets[WINDOW_SIZE];
+    bool ack_received[WINDOW_SIZE] = {0};
+    unsigned int packet_number = 0;
+    int base = 0, next_seq_num = 0;
+    int bytes_read;
+
+    while (base < WINDOW_SIZE || next_seq_num > base) {
+        // Fill window with packets
+        while (next_seq_num < base + WINDOW_SIZE && (bytes_read = fread(packets[next_seq_num % WINDOW_SIZE].data, 1, PACKET_MAX_DATA_SIZE, fp)) > 0) {
+            Packet *packet = &packets[next_seq_num % WINDOW_SIZE];
+            packet->packet_number = next_seq_num;
+            packet->termination_flag = 0;
+            packet->data_size = bytes_read;
+            packet->crc = crc32(0L, (const Bytef*)&packet->packet_number, 
+                                sizeof(packet->packet_number) + sizeof(packet->termination_flag) +
+                                sizeof(packet->data) + sizeof(packet->data_size));
+
+            ack_received[next_seq_num % WINDOW_SIZE] = false;
+
+            // Send the packet
+            sendto(sockfd, packet, sizeof(Packet), 0, (struct sockaddr*)&addr_con, addrlen);
+            printf("Sent packet %u\n", packet->packet_number);
+
+            next_seq_num++;
+        }
+
+        // Receive ACKs for packets in the window
+        for (int i = 0; i < WINDOW_SIZE; i++) {
+            int packet_index = (base + i) % WINDOW_SIZE;
+
+            if (!ack_received[packet_index]) {
+                int ack_flag = receive_ack(ack_sock, ack_con, packets[packet_index].packet_number);
+
+                if (ack_flag == 1) {
+                    ack_received[packet_index] = 1;
+                    printf("Packet %u: ACK received\n", packets[packet_index].packet_number);
+                } else {
+                    // Resend the packet
+                    sendto(sockfd, &packets[packet_index], sizeof(Packet), 0, (struct sockaddr*)&addr_con, addrlen);
+                    printf("Packet %u: Resent due to timeout or NACK\n", packets[packet_index].packet_number);
+                }
+            }
+        }
+
+        // Slide the window
+        while (ack_received[base % WINDOW_SIZE]) {
+            printf("Sliding window. Packet %u acknowledged.\n", packets[base % WINDOW_SIZE].packet_number);
+            ack_received[base % WINDOW_SIZE] = false; // Clear acknowledgment for next window
+            base++;
+        }
+    }
+
+    printf("All packets sent and acknowledged.\n");
 }
 
 int main() {
