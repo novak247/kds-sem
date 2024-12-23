@@ -24,6 +24,19 @@ typedef struct {
     uint32_t crc;
 } Packet;
 
+typedef struct {
+    uint32_t packet_number;
+    uint8_t ack_flag; // 1 for ACK, 0 for NACK
+    uint32_t crc;
+} AckPacket;
+
+typedef struct {
+    uint32_t packet_number;
+    uint16_t data_size;
+    char hash[MD5_DIGEST_LENGTH * 2 + 1];
+    uint32_t crc;
+} HashPacket;
+
 // Function to calculate MD5 hash of a file
 void compute_file_md5(const char* file_name, char* hash_str) {
     unsigned char hash[MD5_DIGEST_LENGTH];
@@ -47,6 +60,33 @@ void compute_file_md5(const char* file_name, char* hash_str) {
     for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
         sprintf(&hash_str[i * 2], "%02x", hash[i]);
     }
+}
+
+// Function to receive ACK/NACK
+int receive_ack(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_number) {
+    AckPacket ack_packet;
+    int ack_addrlen = sizeof(ack_con);
+    int n = recvfrom(ack_sock, &ack_packet, sizeof(ack_packet), 0, (struct sockaddr*)&ack_con, &ack_addrlen);
+
+    if (n > 0) {
+        uint32_t computed_crc = crc32(0L, (const Bytef*)&ack_packet.packet_number, sizeof(ack_packet.packet_number) + sizeof(ack_packet.ack_flag));
+        if (ack_packet.crc == computed_crc && ack_packet.packet_number == packet_number) {
+            return ack_packet.ack_flag;
+        }
+    }
+
+    return -1; // Timeout or invalid ACK/NACK
+}
+
+// Function to send hash packet
+void send_hash_packet(int sockfd, struct sockaddr_in addr_con, uint32_t packet_number, const char* hash) {
+    HashPacket hash_packet;
+    hash_packet.packet_number = packet_number;
+    strncpy(hash_packet.hash, hash, MD5_DIGEST_LENGTH * 2 + 1);
+    hash_packet.data_size = strlen(hash_packet.hash);
+    hash_packet.crc = crc32(0L, (const Bytef*)&hash_packet.packet_number, sizeof(hash_packet.packet_number) + sizeof(hash_packet.data_size) + hash_packet.data_size);
+
+    sendto(sockfd, &hash_packet, sizeof(hash_packet), 0, (struct sockaddr*)&addr_con, sizeof(addr_con));
 }
 
 // Function to send a file using Stop-and-Wait protocol
@@ -77,7 +117,22 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     compute_file_md5(file_name, file_hash);
 
     // Send the file hash to the receiver
-    sendto(sockfd, file_hash, strlen(file_hash), 0, (struct sockaddr*)&addr_con, addrlen);
+    send_hash_packet(sockfd, addr_con, packet_number, file_hash);
+
+    // Wait for ACK for the hash packet
+    int hash_ack_received = 0;
+    int tries = 0;
+    while (!hash_ack_received && tries < 10) {
+        int ack_flag = receive_ack(ack_sock, ack_con, 0);
+        if (ack_flag == 1) {
+            printf("File hash ACK received.\n");
+            hash_ack_received = 1;
+        } else {
+            printf("Resending file hash due to timeout or NACK.\n");
+            send_hash_packet(sockfd, addr_con, packet_number, file_hash);
+        }
+        tries++;
+    }
 
     // Send file packets
     while ((bytes_read = fread(packet.data, 1, PACKET_MAX_DATA_SIZE, fp)) > 0) {
@@ -97,9 +152,8 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
             sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
             printf("3\n");
             // Wait for ACK/NACK
-            int n = recvfrom(ack_sock, response, sizeof(response), 0, (struct sockaddr*)&ack_con, &ack_addrlen);
-            printf("n %d\n", n);
-            if (n > 0 && strncmp(response, "ACK", 3) == 0) {
+            int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
+            if (ack_flag == 1) {
                 ack_received = 1;
                 printf("Packet %u: ACK received\n", packet_number);
             } else {
@@ -111,16 +165,32 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     }
     printf("5\n");
     // Send termination packet
-    strcpy(packet.data, "STOP");
-    packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));//bytes_read
-    packet.termination_flag = 1;
-    sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
-    // Packet termination_packet;
-    // termination_packet.packet_number = 0;
-    // termination_packet.termination_flag = 1;
-    // strcpy(termination_packet.data, "STOP");
-    // termination_packet.crc = crc32(0L, (const Bytef*)packet.data, bytes_read);
+    int termination_ack_received = 0;
+    int retry_count = 0;
+    const int MAX_RETRIES = 5;
 
+    while (!termination_ack_received && retry_count < MAX_RETRIES) {
+        packet.termination_flag = 1;
+        strcpy(packet.data, "STOP");
+        packet.data_size = strlen(packet.data);
+        packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));
+        sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
+
+        // Wait for ACK/NACK for termination packet
+        int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
+        if (ack_flag == 1) {
+            termination_ack_received = 1;
+            printf("Termination packet: ACK received\n");
+        } else {
+            printf("Termination packet: Resending due to timeout or NACK\n");
+        }
+
+        retry_count++;
+    }
+
+    if (retry_count == MAX_RETRIES) {
+        printf("Termination packet: Max retries reached. Exiting.\n");
+    }
 
     printf("File transfer complete.\n");
     fclose(fp);
