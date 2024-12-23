@@ -15,6 +15,7 @@
 #define ACK_PORT_NO 15001 // target port v ack (net derper)
 #define IP_ADDRESS "127.0.0.1"
 #define TIMEOUT_SECONDS 2
+#define WINDOW_SIZE 5 // Window size for Selective Repeat
 
 typedef struct {
     uint32_t packet_number;
@@ -97,6 +98,11 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
         exit(EXIT_FAILURE);
     }
 
+    Packet packets[WINDOW_SIZE];
+    int window_start = 0;
+    int window_end = 0;
+    int base = 0;
+    uint8_t ack_received[WINDOW_SIZE] = {0};
     Packet packet;
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
@@ -135,33 +141,53 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     }
 
     // Send file packets
-    while ((bytes_read = fread(packet.data, 1, PACKET_MAX_DATA_SIZE, fp)) > 0) {
-        packet.packet_number = packet_number;
-        packet.termination_flag = 0;
-        packet.data_size = bytes_read;
-        printf("%d \n", bytes_read);
-        printf("1\n");
-        printf("%d\n", sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data));
-        packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));//bytes_read
-        printf("crc: %d\n", packet.crc);
-        
-        printf("2\n");
-        int ack_received = 0;
-        while (!ack_received) {
-            // Send the packet
-            sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
-            printf("3\n");
-            // Wait for ACK/NACK
-            int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
-            if (ack_flag == 1) {
-                ack_received = 1;
-                printf("Packet %u: ACK received\n", packet_number);
-            } else {
-                printf("Packet %u: Resending due to timeout or NACK\n", packet_number);
+    while (1) {
+        while (window_end - base < WINDOW_SIZE && !feof(fp)) {
+            memset(&packets[window_end % WINDOW_SIZE], 0, sizeof(Packet));
+            bytes_read = fread(packets[window_end % WINDOW_SIZE].data, 1, PACKET_MAX_DATA_SIZE, fp);
+
+            if (bytes_read > 0) {
+                packets[window_end % WINDOW_SIZE].packet_number = window_end;
+                packets[window_end % WINDOW_SIZE].termination_flag = 0;
+                packets[window_end % WINDOW_SIZE].data_size = bytes_read;
+                packets[window_end % WINDOW_SIZE].crc = crc32(0L, (const Bytef *)&packets[window_end % WINDOW_SIZE].packet_number, sizeof(packets[window_end % WINDOW_SIZE].packet_number) + sizeof(packets[window_end % WINDOW_SIZE].termination_flag) + packets[window_end % WINDOW_SIZE].data_size);
+
+                sendto(sockfd, &packets[window_end % WINDOW_SIZE], sizeof(Packet), 0, (struct sockaddr *)&addr_con, sizeof(addr_con));
+                printf("Packet %u sent\n", window_end);
+
+                window_end++;
             }
         }
 
-        packet_number++;
+        AckPacket ack_packet;
+        while (1) {
+            int n = recvfrom(ack_sock, &ack_packet, sizeof(ack_packet), 0, (struct sockaddr *)&ack_con, &timeout);
+            if (n < 0) {
+                break;
+            }
+
+            uint32_t computed_crc = crc32(0L, (const Bytef *)&ack_packet.packet_number, sizeof(ack_packet.packet_number) + sizeof(ack_packet.ack_flag));
+            if (ack_packet.crc == computed_crc && ack_packet.ack_flag == 1) {
+                printf("ACK received for packet %u\n", ack_packet.packet_number);
+                ack_received[ack_packet.packet_number % WINDOW_SIZE] = 1;
+
+                while (ack_received[base % WINDOW_SIZE]) {
+                    ack_received[base % WINDOW_SIZE] = 0;
+                    base++;
+                }
+            }
+        }
+
+        for (int i = base; i < window_end; i++) {
+            if (!ack_received[i % WINDOW_SIZE]) {
+                sendto(sockfd, &packets[i % WINDOW_SIZE], sizeof(Packet), 0, (struct sockaddr *)&addr_con, sizeof(addr_con));
+                printf("Resent packet %u\n", i);
+            }
+        }
+
+        if (base == window_end && feof(fp)) {
+            break;
+        }
     }
     printf("5\n");
     // Send termination packet

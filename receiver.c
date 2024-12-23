@@ -13,8 +13,9 @@
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)  
 #define PORT_NO 15000 // target port v data (net derper)
 #define ACK_PORT_NO 14001 // source port v ack (net derper)
-#define IP_ADDRESS "192.168.0.20" // target host name v ack (net derper)
+#define IP_ADDRESS "192.168.1.126" // target host name v ack (net derper)
 #define SENDRECV_FLAG 0
+#define WINDOW_SIZE 5 // Window size for Selective Repeat
 
 
 typedef struct {
@@ -118,10 +119,12 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
     Packet packet;
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
-    uint32_t expected_packet = 0;
     char file_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     char received_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-
+    uint32_t base = 0; // Base of the window
+    uint32_t next_expected = 0; // Next expected packet within the window
+    uint8_t received[WINDOW_SIZE] = {0}; // Track received packets in the window
+    Packet buffer[WINDOW_SIZE]; // Buffer to store out-of-order packets
 
     // Receive file hash packet
     uint32_t hash_packet_number = 0;
@@ -159,20 +162,41 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
             break;
         }
 
-        // Handle duplicate packets
-        if (packet.packet_number != expected_packet) {
-            printf("Duplicate or out-of-order packet %u received. Sending ACK.\n", packet.packet_number);
+        // Check if the packet is within the window
+        if (packet.packet_number >= base && packet.packet_number < base + WINDOW_SIZE) {
+            int index = packet.packet_number % WINDOW_SIZE;
+
+            // If the packet is already received, resend ACK
+            if (received[index]) {
+                printf("Duplicate packet %u received. Sending ACK.\n", packet.packet_number);
+                send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
+                continue;
+              }
+
+            // Buffer the packet
+            buffer[index] = packet;
+            received[index] = 1;
+            printf("Packet %u received and buffered.\n", packet.packet_number);
+
+            // Send ACK
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
-            continue;
+
+            // Write in-order packets to the file and slide the window
+            while (received[next_expected % WINDOW_SIZE]) {
+                int write_index = next_expected % WINDOW_SIZE;
+                fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
+                printf("Packet %u written to file.\n", next_expected);
+
+                received[write_index] = 0;
+                next_expected++;
+
+                if (next_expected >= base + WINDOW_SIZE) {
+                    base = next_expected;
+                }
+            }
+        } else {
+            printf("Out-of-window packet %u received. Ignoring.\n", packet.packet_number);
         }
-
-        // Write data to file
-        fwrite(packet.data, 1, packet.data_size, fp);
-        printf("Packet %u received and written successfully. Sending ACK.\n", packet.packet_number);
-
-        // Send ACK
-        send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
-        expected_packet++;
     }
 
     fclose(fp);
