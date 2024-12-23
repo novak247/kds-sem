@@ -10,12 +10,12 @@
 #include <openssl/md5.h>  // For file hash
 
 #define PACKET_MAX_SIZE 1024
-#define PACKET_MAX_DATA_SIZE 1024 - 2*sizeof(uint32_t) - sizeof(uint8_t) - sizeof(uint16_t)
+#define PACKET_MAX_DATA_SIZE 512 - 2*sizeof(uint32_t) - sizeof(uint8_t) - sizeof(uint16_t)
 #define PORT_NO 14000 // source port v data (net derper)
 #define ACK_PORT_NO 15001 // target port v ack (net derper)
 #define IP_ADDRESS "127.0.0.1"
-#define TIMEOUT_SECONDS 2
-#define WINDOW_SIZE 5 // Window size for Selective Repeat
+#define TIMEOUT_SECONDS 1
+#define WINDOW_SIZE 2200 // Window size for Selective Repeat
 
 typedef struct {
     uint32_t packet_number;
@@ -34,6 +34,7 @@ typedef struct {
 typedef struct {
     uint32_t packet_number;
     uint16_t data_size;
+    char filename[256];
     char hash[MD5_DIGEST_LENGTH * 2 + 1];
     uint32_t crc;
 } HashPacket;
@@ -80,12 +81,13 @@ int receive_ack(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_number
 }
 
 // Function to send hash packet
-void send_hash_packet(int sockfd, struct sockaddr_in addr_con, uint32_t packet_number, const char* hash) {
+void send_hash_packet(int sockfd, struct sockaddr_in addr_con, uint32_t packet_number, const char* hash, const char* file_name) {
     HashPacket hash_packet;
     hash_packet.packet_number = packet_number;
+    strncpy(hash_packet.filename, file_name, 256);
     strncpy(hash_packet.hash, hash, MD5_DIGEST_LENGTH * 2 + 1);
     hash_packet.data_size = strlen(hash_packet.hash);
-    hash_packet.crc = crc32(0L, (const Bytef*)&hash_packet.packet_number, sizeof(hash_packet.packet_number) + sizeof(hash_packet.data_size) + hash_packet.data_size);
+    hash_packet.crc = crc32(0L, (const Bytef*)&hash_packet.packet_number, sizeof(hash_packet.packet_number) + sizeof(hash_packet.data_size) + sizeof(hash_packet.hash) + sizeof(hash_packet.filename));
 
     sendto(sockfd, &hash_packet, sizeof(hash_packet), 0, (struct sockaddr*)&addr_con, sizeof(addr_con));
 }
@@ -123,7 +125,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     compute_file_md5(file_name, file_hash);
 
     // Send the file hash to the receiver
-    send_hash_packet(sockfd, addr_con, packet_number, file_hash);
+    send_hash_packet(sockfd, addr_con, packet_number, file_hash, file_name);
 
     // Wait for ACK for the hash packet
     int hash_ack_received = 0;
@@ -135,7 +137,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
             hash_ack_received = 1;
         } else {
             printf("Resending file hash due to timeout or NACK.\n");
-            send_hash_packet(sockfd, addr_con, packet_number, file_hash);
+            send_hash_packet(sockfd, addr_con, packet_number, file_hash, file_name);
         }
         tries++;
     }
@@ -150,7 +152,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
                 packets[window_end % WINDOW_SIZE].packet_number = window_end;
                 packets[window_end % WINDOW_SIZE].termination_flag = 0;
                 packets[window_end % WINDOW_SIZE].data_size = bytes_read;
-                packets[window_end % WINDOW_SIZE].crc = crc32(0L, (const Bytef *)&packets[window_end % WINDOW_SIZE].packet_number, sizeof(packets[window_end % WINDOW_SIZE].packet_number) + sizeof(packets[window_end % WINDOW_SIZE].termination_flag) + packets[window_end % WINDOW_SIZE].data_size);
+                packets[window_end % WINDOW_SIZE].crc = crc32(0L, (const Bytef *)&packets[window_end % WINDOW_SIZE].packet_number, sizeof(packets[window_end % WINDOW_SIZE].packet_number) + sizeof(packets[window_end % WINDOW_SIZE].termination_flag) + sizeof(packets[window_end % WINDOW_SIZE].data_size) + sizeof(packets[window_end % WINDOW_SIZE].data) );
 
                 sendto(sockfd, &packets[window_end % WINDOW_SIZE], sizeof(Packet), 0, (struct sockaddr *)&addr_con, sizeof(addr_con));
                 printf("Packet %u sent\n", window_end);
