@@ -13,10 +13,10 @@
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)  
 #define PORT_NO 15000 // target port v data (net derper)
 #define ACK_PORT_NO 14001 // source port v ack (net derper)
-#define IP_ADDRESS "192.168.0.20" // target host name v ack (net derper)
+#define IP_ADDRESS "192.168.1.242" // target host name v ack (net derper)
 #define SENDRECV_FLAG 0
 
-
+#pragma pack(push, 1)
 typedef struct {
     uint32_t packet_number;
     uint8_t termination_flag;
@@ -24,7 +24,7 @@ typedef struct {
     char data[PACKET_MAX_DATA_SIZE];
     uint32_t crc;
 } Packet;
-
+#pragma pack(pop)
 
 typedef struct {
     uint32_t packet_number;
@@ -116,6 +116,7 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
 
 
     Packet packet;
+    printf("packet size %d", sizeof(Packet));
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
     uint32_t expected_packet = 0;
@@ -146,8 +147,8 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         // Validate CRC
         uint32_t computed_crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));
         if (computed_crc != packet.crc) {
-            printf("crc exp: %d, crc calc: %d", computed_crc, packet.crc);
-            printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
+            // printf("crc exp: %d, crc calc: %d", computed_crc, packet.crc);
+            // printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 0);
             continue;  
         }
@@ -160,8 +161,8 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         }
 
         // Handle duplicate packets
-        if (packet.packet_number != expected_packet) {
-            printf("Duplicate or out-of-order packet %u received. Sending ACK.\n", packet.packet_number);
+        if (packet.packet_number < expected_packet) {
+            // printf("Duplicate or out-of-order packet %u received. Sending ACK.\n", packet.packet_number);
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
             continue;
         }
@@ -222,7 +223,7 @@ int main() {
     ack_con.sin_port = htons(ACK_PORT_NO);
     ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
 
-    printf("Waiting for file...\n");
+        printf("Waiting for file...\n");
     receive_file(sockfd, ack_sock, addr_con, ack_con);
 
     close(sockfd);

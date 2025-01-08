@@ -16,6 +16,7 @@
 #define IP_ADDRESS "127.0.0.1"
 #define TIMEOUT_SECONDS 2
 
+#pragma pack(push,1)
 typedef struct {
     uint32_t packet_number;
     uint8_t termination_flag;
@@ -23,6 +24,7 @@ typedef struct {
     char data[PACKET_MAX_DATA_SIZE];
     uint32_t crc;
 } Packet;
+#pragma pack(pop)
 
 typedef struct {
     uint32_t packet_number;
@@ -93,17 +95,18 @@ void send_hash_packet(int sockfd, struct sockaddr_in addr_con, uint32_t packet_n
 void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
     FILE* fp = fopen(file_name, "rb");
     if (!fp) {
-        perror("Failed to open file");
+        // perror("Failed to open file");
         exit(EXIT_FAILURE);
     }
 
     Packet packet;
+    printf("size of packet is: %d\n     ", sizeof(packet));
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
     uint32_t packet_number = 0;
     size_t bytes_read;
     char response[4];
-    struct timeval timeout = {TIMEOUT_SECONDS, 0};
+    struct timeval timeout = {0, 10000};
 
     // Set socket timeout
     if (setsockopt(ack_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
@@ -125,10 +128,10 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     while (!hash_ack_received && tries < 10) {
         int ack_flag = receive_ack(ack_sock, ack_con, 0);
         if (ack_flag == 1) {
-            printf("File hash ACK received.\n");
+            // printf("File hash ACK received.\n");
             hash_ack_received = 1;
         } else {
-            printf("Resending file hash due to timeout or NACK.\n");
+            // printf("Resending file hash due to timeout or NACK.\n");
             send_hash_packet(sockfd, addr_con, packet_number, file_hash);
         }
         tries++;
@@ -139,41 +142,43 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
         packet.packet_number = packet_number;
         packet.termination_flag = 0;
         packet.data_size = bytes_read;
-        printf("%d \n", bytes_read);
-        printf("1\n");
-        printf("%d\n", sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data));
+        // printf("%d \n", bytes_read);
+        // printf("1\n");
+        // printf("%d\n", sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data));
         packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));//bytes_read
-        printf("crc: %d\n", packet.crc);
+        // printf("crc: %d\n", packet.crc);
         
-        printf("2\n");
+        // printf("2\n");
         int ack_received = 0;
         while (!ack_received) {
             // Send the packet
             sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
-            printf("3\n");
+            // printf("crc calc: %d", packet.crc);
+            // printf("3\n");
             // Wait for ACK/NACK
             int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
             if (ack_flag == 1) {
                 ack_received = 1;
                 printf("Packet %u: ACK received\n", packet_number);
             } else {
-                printf("Packet %u: Resending due to timeout or NACK\n", packet_number);
+                // printf("Packet %u: Resending due to timeout or NACK\n", packet_number);
             }
         }
 
         packet_number++;
     }
-    printf("5\n");
+    // printf("5\n");
     // Send termination packet
     int termination_ack_received = 0;
     int retry_count = 0;
-    const int MAX_RETRIES = 5;
+    const int MAX_RETRIES = 20;
 
     while (!termination_ack_received && retry_count < MAX_RETRIES) {
         packet.termination_flag = 1;
         strcpy(packet.data, "STOP");
         packet.data_size = strlen(packet.data);
         packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));
+        
         sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
 
         // Wait for ACK/NACK for termination packet
@@ -222,7 +227,7 @@ int main() {
     ack_con.sin_port = htons(ACK_PORT_NO);
     ack_con.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(sockfd, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
+    if (bind(ack_sock, (struct sockaddr*)&ack_con, sizeof(ack_con)) < 0) {
         perror("Bind failed");
         close(sockfd);
         close(ack_sock);
@@ -233,7 +238,7 @@ int main() {
     printf("Enter the file name to send: ");
     scanf("%s", file_name);
 
-    send_file(file_name, sockfd, sockfd, addr_con, ack_con);
+    send_file(file_name, sockfd, ack_sock, addr_con, ack_con);
 
     close(sockfd);
     close(ack_sock);
