@@ -17,7 +17,7 @@
 #define SENDRECV_FLAG 0
 #define WINDOW_SIZE 2024      // Window size for Selective Repeat
 
-
+#pragma pack(push, 1)
 typedef struct {
     uint32_t packet_number;
     uint8_t termination_flag;
@@ -25,14 +25,15 @@ typedef struct {
     char data[PACKET_MAX_DATA_SIZE];
     uint32_t crc;
 } Packet;
+#pragma pack(pop)
 
-
+#pragma pack(push, 1)
 typedef struct {
     uint32_t packet_number;
     uint8_t ack_flag; // 1 for ACK, 0 for NACK
     uint32_t crc;
 } AckPacket;
-
+#pragma pack(pop)
 
 // Function to calculate MD5 hash of a file
 void compute_file_md5(const char* file_name, char* hash_str) {
@@ -120,7 +121,7 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
             //     int write_index = next_expected % WINDOW_SIZE;
             //     fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
             //     printf("Packet %u written to file.\n", next_expected);
-            //     received[write_index] = 0;
+            //     received[write_index] = 0;   
             //     memset(&buffer[write_index], 0, sizeof(buffer[write_index]));
             //     next_expected++;
             //     base = next_expected;

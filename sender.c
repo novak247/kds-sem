@@ -17,6 +17,7 @@
 #define TIMEOUT_SECONDS 1
 #define WINDOW_SIZE 1024 // Window size for Selective Repeat
 
+#pragma pack(push, 1)
 typedef struct {
     uint32_t packet_number;
     uint8_t termination_flag;
@@ -24,12 +25,15 @@ typedef struct {
     char data[PACKET_MAX_DATA_SIZE];
     uint32_t crc;
 } Packet;
+#pragma pack(pop)
 
+#pragma pack(push, 1)
 typedef struct {
     uint32_t packet_number;
     uint8_t ack_flag; // 1 for ACK, 0 for NACK
     uint32_t crc;
 } AckPacket;
+#pragma pack(pop)
 
 
 // Function to calculate MD5 hash of a file
@@ -93,7 +97,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     uint32_t packet_number = 0;
     size_t bytes_read;
     char response[4];
-    struct timeval timeout = {0, 500000}; // 0 seconds, 500,000 microseconds
+    struct timeval timeout = {0, 50000}; // 0 seconds, 500,000 microseconds
 
     // Set socket timeout
     if (setsockopt(ack_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
@@ -192,7 +196,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     // Send termination packet
     int termination_ack_received = 0;
     int retry_count = 0;
-    const int MAX_RETRIES = 5;
+    const int MAX_RETRIES = 40;
 
     while (!termination_ack_received && retry_count < MAX_RETRIES) {
         packet.termination_flag = 1;
