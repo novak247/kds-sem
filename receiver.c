@@ -13,9 +13,9 @@
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)  
 #define PORT_NO 15000 // target port v data (net derper)
 #define ACK_PORT_NO 14001 // source port v ack (net derper)
-#define IP_ADDRESS "192.168.1.126" // target host name v ack (net derper)
+#define IP_ADDRESS "192.168.1.242" // target host name v ack (net derper)
 #define SENDRECV_FLAG 0
-#define WINDOW_SIZE 5 // Window size for Selective Repeat
+#define WINDOW_SIZE 2024      // Window size for Selective Repeat
 
 
 typedef struct {
@@ -32,14 +32,6 @@ typedef struct {
     uint8_t ack_flag; // 1 for ACK, 0 for NACK
     uint32_t crc;
 } AckPacket;
-
-
-typedef struct {
-    uint32_t packet_number;
-    uint16_t data_size;
-    char hash[MD5_DIGEST_LENGTH * 2 + 1];
-    uint32_t crc;
-} HashPacket;
 
 
 // Function to calculate MD5 hash of a file
@@ -83,56 +75,20 @@ void send_ack_packet(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_n
 }
 
 
-// Function to receive hash packet
-int receive_hash_packet(int sockfd, struct sockaddr_in addr_con, char* received_hash) {
-    HashPacket hash_packet;
-    int addrlen = sizeof(addr_con);
-
-
-    if (recvfrom(sockfd, &hash_packet, sizeof(hash_packet), 0, (struct sockaddr*)&addr_con, &addrlen) < 0) {
-        perror("Failed to receive hash packet");
-        return -1;
-    }
-
-
-    uint32_t computed_crc = crc32(0L, (const Bytef*)&hash_packet.packet_number, sizeof(hash_packet.packet_number) + sizeof(hash_packet.data_size) + hash_packet.data_size);
-    if (computed_crc != hash_packet.crc) {
-        printf("Hash packet CRC mismatch. Discarding packet.\n");
-        return -1;
-    }
-
-
-    strncpy(received_hash, hash_packet.hash, hash_packet.data_size);
-    return 0;
-}
-
-
 // Function to receive a file using Stop-and-Wait protocol
 void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
-    FILE* fp = fopen("received_file", "wb");
-    if (!fp) {
-        perror("Failed to open file for writing");
-        exit(EXIT_FAILURE);
-    }
-
-
     Packet packet;
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
-    char file_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     char received_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     uint32_t base = 0; // Base of the window
     uint32_t next_expected = 0; // Next expected packet within the window
     uint8_t received[WINDOW_SIZE] = {0}; // Track received packets in the window
     Packet buffer[WINDOW_SIZE]; // Buffer to store out-of-order packets
-
+    char filename[256];
+    FILE* fp;
+    size_t bytes_written;
     // Receive file hash packet
-    uint32_t hash_packet_number = 0;
-    while (receive_hash_packet(sockfd, addr_con, received_hash) < 0) {
-        send_ack_packet(ack_sock, ack_con, hash_packet_number, 0);
-    }
-    send_ack_packet(ack_sock, ack_con, hash_packet_number, 1);
-    printf("Expected file hash: %s\n", received_hash);
 
 
     while (1) {
@@ -141,6 +97,7 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
 
 
         if (nBytes < 0) {
+            memset(&packet, 0, sizeof(packet));
             perror("Failed to receive packet");
             break;
         }
@@ -149,8 +106,8 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         // Validate CRC
         uint32_t computed_crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));
         if (computed_crc != packet.crc) {
-            printf("crc exp: %d, crc calc: %d", computed_crc, packet.crc);
-            printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
+            // printf("crc exp: %d, crc calc: %d", computed_crc, packet.crc);
+            // printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 0);
             continue;  
         }
@@ -159,52 +116,94 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         if (packet.termination_flag == 1) {
             printf("Termination packet received. Ending transfer.\n");
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
+            // while (received[next_expected % WINDOW_SIZE]) {
+            //     int write_index = next_expected % WINDOW_SIZE;
+            //     fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
+            //     printf("Packet %u written to file.\n", next_expected);
+            //     received[write_index] = 0;
+            //     memset(&buffer[write_index], 0, sizeof(buffer[write_index]));
+            //     next_expected++;
+            //     base = next_expected;
+            // }
             break;
         }
 
         // Check if the packet is within the window
-        if (packet.packet_number >= base && packet.packet_number < base + WINDOW_SIZE) {
+        // printf("packet num: %u, base: %u", packet.packet_number, base);
+        if ((packet.packet_number >= base) && (packet.packet_number < base + WINDOW_SIZE)) {
             int index = packet.packet_number % WINDOW_SIZE;
-
+            
             // If the packet is already received, resend ACK
             if (received[index]) {
-                printf("Duplicate packet %u received. Sending ACK.\n", packet.packet_number);
+                // printf("Duplicate packet %u received. Sending ACK.\n", packet.packet_number);
                 send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
                 continue;
-              }
+            }
 
             // Buffer the packet
             buffer[index] = packet;
             received[index] = 1;
-            printf("Packet %u received and buffered.\n", packet.packet_number);
+            // printf("Packet %u received and buffered.\n", packet.packet_number);
 
-            // Send ACK
+            // Send ACK 
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
 
             // Write in-order packets to the file and slide the window
             while (received[next_expected % WINDOW_SIZE]) {
                 int write_index = next_expected % WINDOW_SIZE;
-                fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
-                printf("Packet %u written to file.\n", next_expected);
-
-                received[write_index] = 0;
-                next_expected++;
-
-                if (next_expected >= base + WINDOW_SIZE) {
-                    base = next_expected;
+                printf("index %d", write_index);
+                if (buffer[write_index].packet_number == 0){
+                    strncpy(filename, buffer[write_index].data, buffer[write_index].data_size);
+                    printf("Filename: %s, packet_number:  %u, index: %d \n", filename, buffer[write_index].packet_number, index);
+                    fp = fopen(filename, "wb");
+                    if (!fp) {
+                        perror("Failed to open file for writing");
+                        exit(EXIT_FAILURE);
+                    }
+                } else if (buffer[write_index].packet_number == 1){
+                    strncpy(received_hash, buffer[write_index].data, buffer[write_index].data_size);
+                    printf("File hash : %s, packet_number:  %u, index: %d\n", received_hash, buffer[write_index].packet_number, index);
+                } else{
+                    bytes_written = fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
+                    if (bytes_written != buffer[write_index].data_size) {
+                        perror("Error writing to file");
+                        exit(EXIT_FAILURE);
+                    }
                 }
+                memset(&buffer[write_index], 0, sizeof(buffer[write_index]));
+                received[write_index] = 0;
+                // printf("base: %u", base);
+                next_expected++;
+                base = next_expected;
             }
+            // while (received[base % WINDOW_SIZE]) {
+            //     int write_index = base % WINDOW_SIZE;
+            //     fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
+            //     // printf("Packet %u written to file.\n", next_expected);
+            //     received[write_index] = 0;
+            //     memset(&buffer[write_index], 0, sizeof(buffer[write_index]));
+            //     base++;
+            //     next_expected = base;
+                
+            // }
+
         } else {
-            printf("Out-of-window packet %u received. Ignoring.\n", packet.packet_number);
+            // printf("Out-of-window packet %u received. Ignoring. base is: %d \n", packet.packet_number, base);
+            if (packet.packet_number < base) {
+                send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
+            }
         }
+
+        
     }
 
     fclose(fp);
 
     // Compute and validate file hash
     char computed_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-    compute_file_md5("received_file", computed_hash);
+    compute_file_md5(filename, computed_hash);
     printf("Computed file hash: %s\n", computed_hash);
+    printf("Received hash: %s \n", received_hash);
 
     if (strcmp(computed_hash, received_hash) == 0) {
         printf("File transfer successful. Hash matches.\n");
@@ -212,6 +211,8 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         printf("File transfer failed. Hash mismatch.\n");
     }
 }
+
+
 
 int main() {
     int sockfd, ack_sock;
@@ -245,7 +246,6 @@ int main() {
     ack_con.sin_family = AF_INET;
     ack_con.sin_port = htons(ACK_PORT_NO);
     ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
-
     printf("Waiting for file...\n");
     receive_file(sockfd, ack_sock, addr_con, ack_con);
 
