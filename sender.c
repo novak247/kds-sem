@@ -93,7 +93,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     uint32_t packet_number = 0;
     size_t bytes_read;
     char response[4];
-    struct timeval timeout = {0, 10000};
+    struct timeval timeout = {0, 200000};
     int ack_received = 0;
 
     // Set socket timeout
@@ -121,7 +121,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     ack_received = 0;
     while (!ack_received) {
         sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
-        printf("sending packet with filename: %u \n", packet.packet_number);
+        // printf("sending packet with filename: %u \n", packet.packet_number);
         int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
         if (ack_flag == 1) {
             ack_received = 1;
@@ -224,7 +224,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
             termination_ack_received = 1;
             printf("Termination packet: ACK received\n");
         } else {
-            printf("Termination packet: Resending due to timeout or NACK\n");
+            // printf("Termination packet: Resending due to timeout or NACK\n");
         }
 
         retry_count++;
