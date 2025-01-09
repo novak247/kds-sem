@@ -13,7 +13,7 @@
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)  
 #define PORT_NO 15000 // target port v data (net derper)
 #define ACK_PORT_NO 14001 // source port v ack (net derper)
-#define IP_ADDRESS "192.168.1.242" // target host name v ack (net derper)
+#define IP_ADDRESS "10.4.111.59" // target host name v ack (net derper)
 #define SENDRECV_FLAG 0
 
 #pragma pack(push, 1)
@@ -26,20 +26,23 @@ typedef struct {
 } Packet;
 #pragma pack(pop)
 
+#pragma pack(push, 1)
 typedef struct {
     uint32_t packet_number;
     uint8_t ack_flag; // 1 for ACK, 0 for NACK
     uint32_t crc;
 } AckPacket;
+#pragma pack(pop)
 
-
+#pragma pack(push, 1)
 typedef struct {
     uint32_t packet_number;
     uint16_t data_size;
+    char filename[256];
     char hash[MD5_DIGEST_LENGTH * 2 + 1];
     uint32_t crc;
 } HashPacket;
-
+#pragma pack(pop)
 
 // Function to calculate MD5 hash of a file
 void compute_file_md5(const char* file_name, char* hash_str) {
@@ -47,7 +50,7 @@ void compute_file_md5(const char* file_name, char* hash_str) {
     MD5_CTX md5_ctx;
     FILE* fp = fopen(file_name, "rb");
     if (!fp) {
-        perror("Failed to open file for MD5 computation");
+        printf("Failed to open file %s for MD5 computation", file_name);
         exit(EXIT_FAILURE);
     }
 
@@ -83,7 +86,7 @@ void send_ack_packet(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_n
 
 
 // Function to receive hash packet
-int receive_hash_packet(int sockfd, struct sockaddr_in addr_con, char* received_hash) {
+int receive_hash_packet(int sockfd, struct sockaddr_in addr_con, char* received_hash, char* received_file) {
     HashPacket hash_packet;
     int addrlen = sizeof(addr_con);
 
@@ -94,43 +97,28 @@ int receive_hash_packet(int sockfd, struct sockaddr_in addr_con, char* received_
     }
 
 
-    uint32_t computed_crc = crc32(0L, (const Bytef*)&hash_packet.packet_number, sizeof(hash_packet.packet_number) + sizeof(hash_packet.data_size) + hash_packet.data_size);
+    uint32_t computed_crc = crc32(0L, (const Bytef*)&hash_packet.packet_number, sizeof(hash_packet.packet_number) + sizeof(hash_packet.data_size) + sizeof(hash_packet.filename) + sizeof(hash_packet.hash));
     if (computed_crc != hash_packet.crc) {
         printf("Hash packet CRC mismatch. Discarding packet.\n");
         return -1;
     }
 
-
-    strncpy(received_hash, hash_packet.hash, hash_packet.data_size);
+    strncpy(received_file, hash_packet.filename, sizeof(hash_packet.filename));
+    strncpy(received_hash, hash_packet.hash, sizeof(hash_packet.hash));
     return 0;
 }
 
 
-// Function to receive a file using Stop-and-Wait protocol
+// Func on to receive a file using Stop-and-Wait protocol
 void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
-    FILE* fp = fopen("received_file", "wb");
-    if (!fp) {
-        perror("Failed to open file for writing");
-        exit(EXIT_FAILURE);
-    }
-
+    char received_file[256];
 
     Packet packet;
-    printf("packet size %d", sizeof(Packet));
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
-    uint32_t expected_packet = 0;
-    char file_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
+    uint32_t expected_packet = 2;
     char received_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-
-
-    // Receive file hash packet
-    uint32_t hash_packet_number = 0;
-    while (receive_hash_packet(sockfd, addr_con, received_hash) < 0) {
-        send_ack_packet(ack_sock, ack_con, hash_packet_number, 0);
-    }
-    send_ack_packet(ack_sock, ack_con, hash_packet_number, 1);
-    printf("Expected file hash: %s\n", received_hash);
+    FILE* fp;
 
 
     while (1) {
@@ -148,11 +136,28 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
         uint32_t computed_crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));
         if (computed_crc != packet.crc) {
             // printf("crc exp: %d, crc calc: %d", computed_crc, packet.crc);
-            // printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
+            printf("Packet %u failed CRC check. Sending NACK.\n", packet.packet_number);
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 0);
             continue;  
         }
 
+        if (packet.packet_number == 0){
+            strncpy(received_file, packet.data, packet.data_size);
+            printf("Filename: %s, packet_number:  %u\n", received_file, packet.packet_number);
+            fp = fopen(received_file, "wb"); 
+            if (!fp) {
+                perror("Failed to open file for writing");
+                exit(EXIT_FAILURE);
+            }
+            send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
+            continue;
+        } 
+        if (packet.packet_number == 1){
+            strncpy(received_hash, packet.data, packet.data_size);
+            printf("File hash : %s, packet_number:  %u\n", received_hash, packet.packet_number);
+            send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
+            continue;
+        }   
         // Check for termination packet
         if (packet.termination_flag == 1) {
             printf("Termination packet received. Ending transfer.\n");
@@ -180,7 +185,7 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
 
     // Compute and validate file hash
     char computed_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-    compute_file_md5("received_file", computed_hash);
+    compute_file_md5(received_file, computed_hash);
     printf("Computed file hash: %s\n", computed_hash);
 
     if (strcmp(computed_hash, received_hash) == 0) {
@@ -223,7 +228,7 @@ int main() {
     ack_con.sin_port = htons(ACK_PORT_NO);
     ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
 
-        printf("Waiting for file...\n");
+    printf("Waiting for file...\n");
     receive_file(sockfd, ack_sock, addr_con, ack_con);
 
     close(sockfd);

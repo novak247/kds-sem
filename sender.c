@@ -26,18 +26,14 @@ typedef struct {
 } Packet;
 #pragma pack(pop)
 
+#pragma pack(push,1)
 typedef struct {
     uint32_t packet_number;
     uint8_t ack_flag; // 1 for ACK, 0 for NACK
     uint32_t crc;
 } AckPacket;
+#pragma pack(pop)
 
-typedef struct {
-    uint32_t packet_number;
-    uint16_t data_size;
-    char hash[MD5_DIGEST_LENGTH * 2 + 1];
-    uint32_t crc;
-} HashPacket;
 
 // Function to calculate MD5 hash of a file
 void compute_file_md5(const char* file_name, char* hash_str) {
@@ -73,6 +69,7 @@ int receive_ack(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_number
     if (n > 0) {
         uint32_t computed_crc = crc32(0L, (const Bytef*)&ack_packet.packet_number, sizeof(ack_packet.packet_number) + sizeof(ack_packet.ack_flag));
         if (ack_packet.crc == computed_crc && ack_packet.packet_number == packet_number) {
+            printf("crc ok with some flag\n");
             return ack_packet.ack_flag;
         }
     }
@@ -80,16 +77,6 @@ int receive_ack(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_number
     return -1; // Timeout or invalid ACK/NACK
 }
 
-// Function to send hash packet
-void send_hash_packet(int sockfd, struct sockaddr_in addr_con, uint32_t packet_number, const char* hash) {
-    HashPacket hash_packet;
-    hash_packet.packet_number = packet_number;
-    strncpy(hash_packet.hash, hash, MD5_DIGEST_LENGTH * 2 + 1);
-    hash_packet.data_size = strlen(hash_packet.hash);
-    hash_packet.crc = crc32(0L, (const Bytef*)&hash_packet.packet_number, sizeof(hash_packet.packet_number) + sizeof(hash_packet.data_size) + hash_packet.data_size);
-
-    sendto(sockfd, &hash_packet, sizeof(hash_packet), 0, (struct sockaddr*)&addr_con, sizeof(addr_con));
-}
 
 // Function to send a file using Stop-and-Wait protocol
 void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
@@ -107,6 +94,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     size_t bytes_read;
     char response[4];
     struct timeval timeout = {0, 10000};
+    int ack_received = 0;
 
     // Set socket timeout
     if (setsockopt(ack_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
@@ -119,41 +107,85 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     char file_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     compute_file_md5(file_name, file_hash);
 
-    // Send the file hash to the receiver
-    send_hash_packet(sockfd, addr_con, packet_number, file_hash);
 
-    // Wait for ACK for the hash packet
-    int hash_ack_received = 0;
-    int tries = 0;
-    while (!hash_ack_received && tries < 10) {
-        int ack_flag = receive_ack(ack_sock, ack_con, 0);
+    //send file name
+    memset(&packet, 0, sizeof(Packet));
+    packet.packet_number = packet_number;
+    packet.termination_flag = 0;
+    packet.data_size = strlen(file_name);
+    strncpy(packet.data, file_name, 256);
+    packet.crc = crc32(0L, (const Bytef *)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data_size) + sizeof(packet.data));
+
+    sendto(sockfd, &packet, sizeof(Packet), 0, (struct sockaddr *)&addr_con, sizeof(addr_con));
+    
+    ack_received = 0;
+    while (!ack_received) {
+        sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
+        printf("sending packet with filename: %u \n", packet.packet_number);
+        int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
         if (ack_flag == 1) {
-            // printf("File hash ACK received.\n");
-            hash_ack_received = 1;
-        } else {
-            // printf("Resending file hash due to timeout or NACK.\n");
-            send_hash_packet(sockfd, addr_con, packet_number, file_hash);
+            ack_received = 1;
+            printf("Packet for file name %u: ACK received\n", packet_number);
         }
-        tries++;
     }
+    packet_number++;
+
+    //send hash
+    memset(&packet, 0, sizeof(Packet));
+    packet.packet_number = packet_number;
+    packet.termination_flag = 0;
+    packet.data_size = strlen(file_hash);
+    strncpy(packet.data, file_hash, MD5_DIGEST_LENGTH * 2 + 1);
+    packet.crc = crc32(0L, (const Bytef *)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data_size) + sizeof(packet.data) );
+
+    sendto(sockfd, &packet, sizeof(Packet), 0, (struct sockaddr *)&addr_con, sizeof(addr_con));
+    
+    ack_received = 0;
+    while (!ack_received) {
+        sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
+        printf("sending packet with hash: %u \n", packet.packet_number);
+        int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
+        if (ack_flag == 1) {
+            ack_received = 1;
+            printf("Packet for hash %u: ACK received\n", packet_number);
+        }
+    }
+    packet_number++;
+
+
+    // // Send the file hash to the receiver
+    // send_hash_packet(sockfd, addr_con, packet_number, file_hash, file_name);
+
+    // // Wait for ACK for the hash packet
+    // int hash_ack_received = 0;
+    // while (!hash_ack_received) {
+    //     printf("In hask ack while loop.\n");
+    //     int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
+    //     if (ack_flag == 1) {
+    //         printf("File hash ACK received.\n");
+    //         hash_ack_received = 1;
+    //     } else {
+    //         printf("Resending file hash due to timeout or NACK.\n");
+    //         send_hash_packet(sockfd, addr_con, packet_number, file_hash, file_name);
+    //     }
+    // }
+    // packet_number++;
 
     // Send file packets
-    while ((bytes_read = fread(packet.data, 1, PACKET_MAX_DATA_SIZE, fp)) > 0) {
+    while (1){
+        memset(&packet, 0, sizeof(Packet));
+        bytes_read = fread(packet.data, 1, PACKET_MAX_DATA_SIZE, fp);
         packet.packet_number = packet_number;
         packet.termination_flag = 0;
         packet.data_size = bytes_read;
-        // printf("%d \n", bytes_read);
-        // printf("1\n");
-        // printf("%d\n", sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data));
         packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));//bytes_read
-        // printf("crc: %d\n", packet.crc);
         
         // printf("2\n");
-        int ack_received = 0;
+        ack_received = 0;
         while (!ack_received) {
             // Send the packet
             sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
-            // printf("crc calc: %d", packet.crc);
+            printf("sending packet: %u \n", packet.packet_number);
             // printf("3\n");
             // Wait for ACK/NACK
             int ack_flag = receive_ack(ack_sock, ack_con, packet_number);
@@ -166,6 +198,11 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
         }
 
         packet_number++;
+
+        if (feof(fp)) {
+            printf("base == window end breaking;\n");
+            break;
+        }
     }
     // printf("5\n");
     // Send termination packet
