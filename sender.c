@@ -15,7 +15,7 @@
 #define ACK_PORT_NO 15001 // target port v ack (net derper)
 #define IP_ADDRESS "127.0.0.1"
 #define TIMEOUT_SECONDS 1
-#define WINDOW_SIZE 1024 // Window size for Selective Repeat
+// #define WINDOW_SIZE 2024 // Window size for Selective Repeat
 
 #pragma pack(push, 1)
 typedef struct {
@@ -79,7 +79,7 @@ int receive_ack(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_number
 
 
 // Function to send a file using Stop-and-Wait protocol
-void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
+void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con, int WINDOW_SIZE) {
     FILE* fp = fopen(file_name, "rb");
     if (!fp) {
         perror("Failed to open file");
@@ -90,14 +90,15 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
     // int window_start = 0;
     int window_end = 0;
     int base = 0;
-    uint8_t ack_received[WINDOW_SIZE] = {0};
+    uint8_t ack_received[WINDOW_SIZE];
+    memset(ack_received, 0, sizeof(ack_received));
     Packet packet;
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
     uint32_t packet_number = 0;
     size_t bytes_read;
     char response[4];
-    struct timeval timeout = {0, 50000}; // 0 seconds, 500,000 microseconds
+    struct timeval timeout = {0, 50000}; // 0 seconds, 50,000 microseconds
 
     // Set socket timeout
     if (setsockopt(ack_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
@@ -162,13 +163,15 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
             socklen_t addr_len = sizeof(ack_con);
             int n = recvfrom(ack_sock, &ack_packet, sizeof(ack_packet), 0, (struct sockaddr *)&ack_con, &addr_len);
             // int n = recvfrom(ack_sock, &ack_packet, sizeof(ack_packet), 0, (struct sockaddr *)&ack_con, &timeout);
-            if (n < 0) {
+            
+            if (n <= 0) {
+                printf("breaking from ack while loop\n");
                 break;
             }
 
             uint32_t computed_crc = crc32(0L, (const Bytef *)&ack_packet.packet_number, sizeof(ack_packet.packet_number) + sizeof(ack_packet.ack_flag));
             if (ack_packet.crc == computed_crc && ack_packet.ack_flag == 1) {
-                // printf("ACK received for packet %u\n", ack_packet.packet_number);
+                printf("ACK received for packet %u\n", ack_packet.packet_number);
                 ack_received[ack_packet.packet_number % WINDOW_SIZE] = 1;
 
                 while (ack_received[base % WINDOW_SIZE]) {
@@ -177,22 +180,25 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
                 }
             }
             if(ack_packet.ack_flag==0 && ack_packet.crc == computed_crc){
-                printf("NACK received for packet %u\n", ack_packet.packet_number);
+                printf("NACK received for packet %u, sending packet again\n", ack_packet.packet_number);
+                sendto(sockfd, &packets[ack_packet.packet_number % WINDOW_SIZE], sizeof(Packet), 0, (struct sockaddr *)&addr_con, sizeof(addr_con));
             }
         }
-
+        printf("Before the for loop\n");
         for (int i = base; i < window_end; i++) {
+            // printf("inside for loop for resending packets %u\n", i);
             if (!ack_received[i % WINDOW_SIZE]) {
                 sendto(sockfd, &packets[i % WINDOW_SIZE], sizeof(Packet), 0, (struct sockaddr *)&addr_con, sizeof(addr_con));
-                // printf("Resent packet %u\n", i);
+                printf("Resent packet %u\n", i);
             }
         }
 
         if (base == window_end && feof(fp)) {
+            printf("base == window end breaking;\n");
             break;
         }
     }
-    printf("5\n");
+    printf("All packets send, sending termination packet\n");
     // Send termination packet
     int termination_ack_received = 0;
     int retry_count = 0;
@@ -202,7 +208,7 @@ void send_file(const char* file_name, int sockfd, int ack_sock, struct sockaddr_
         packet.termination_flag = 1;
         strcpy(packet.data, "STOP");
         packet.data_size = strlen(packet.data);
-        // packet.packet_number = 
+        packet.packet_number = window_end+1;
         packet.crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));
         sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&addr_con, addrlen);
 
@@ -261,13 +267,19 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    int window_size;
+    printf("Enter the window size: ");
+    scanf("%d", &window_size);
+
     char file_name[256];
     printf("Enter the file name to send: ");
     scanf("%s", file_name);
 
+    
+
     printf("socket num : %d, %d\n", sockfd, ack_sock);
 
-    send_file(file_name, sockfd, ack_sock, addr_con, ack_con);
+    send_file(file_name, sockfd, ack_sock, addr_con, ack_con, window_size);
 
     close(sockfd);
     close(ack_sock);

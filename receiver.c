@@ -13,7 +13,7 @@
 #define PACKET_MAX_DATA_SIZE 1024 -2*sizeof(uint32_t)-sizeof(uint8_t)-sizeof(uint16_t)  
 #define PORT_NO 15000 // target port v data (net derper)
 #define ACK_PORT_NO 14001 // source port v ack (net derper)
-#define IP_ADDRESS "192.168.1.242" // target host name v ack (net derper)
+#define IP_ADDRESS "10.4.111.59" // target host name v ack (net derper)
 #define SENDRECV_FLAG 0
 #define WINDOW_SIZE 2024      // Window size for Selective Repeat
 
@@ -77,18 +77,20 @@ void send_ack_packet(int ack_sock, struct sockaddr_in ack_con, uint32_t packet_n
 
 
 // Function to receive a file using Stop-and-Wait protocol
-void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con) {
+void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct sockaddr_in ack_con, int window_size) {
     Packet packet;
     int addrlen = sizeof(addr_con);
     int ack_addrlen = sizeof(ack_con);
     char received_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     uint32_t base = 0; // Base of the window
     uint32_t next_expected = 0; // Next expected packet within the window
-    uint8_t received[WINDOW_SIZE] = {0}; // Track received packets in the window
-    Packet buffer[WINDOW_SIZE]; // Buffer to store out-of-order packets
+    uint8_t received[window_size]; // Track received packets in the window
+    memset(received, 0, sizeof(received));
+    Packet buffer[window_size]; // Buffer to store out-of-order packets
     char filename[256];
     FILE* fp;
     size_t bytes_written;
+    uint32_t largest_packet_number = 0;
     // Receive file hash packet
 
 
@@ -102,7 +104,7 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
             perror("Failed to receive packet");
             break;
         }
-
+        
 
         // Validate CRC
         uint32_t computed_crc = crc32(0L, (const Bytef*)&packet.packet_number, sizeof(packet.packet_number) + sizeof(packet.termination_flag) + sizeof(packet.data) + sizeof(packet.data_size));
@@ -112,28 +114,28 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 0);
             continue;  
         }
-
+        
         // Check for termination packet
         if (packet.termination_flag == 1) {
             printf("Termination packet received. Ending transfer.\n");
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
-            // while (received[next_expected % WINDOW_SIZE]) {
-            //     int write_index = next_expected % WINDOW_SIZE;
-            //     fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
-            //     printf("Packet %u written to file.\n", next_expected);
-            //     received[write_index] = 0;   
-            //     memset(&buffer[write_index], 0, sizeof(buffer[write_index]));
-            //     next_expected++;
-            //     base = next_expected;
-            // }
+            while (received[next_expected % window_size]) {
+                int write_index = next_expected % window_size;
+                fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
+                printf("Packet %u written to file.\n", next_expected);
+                received[write_index] = 0;   
+                memset(&buffer[write_index], 0, sizeof(buffer[write_index]));
+                next_expected++;
+                base = next_expected;
+            }
             break;
         }
-
         // Check if the packet is within the window
-        // printf("packet num: %u, base: %u", packet.packet_number, base);
-        if ((packet.packet_number >= base) && (packet.packet_number < base + WINDOW_SIZE)) {
-            int index = packet.packet_number % WINDOW_SIZE;
-            
+        if ((packet.packet_number >= base) && (packet.packet_number < base + window_size)) {
+            int index = packet.packet_number % window_size;
+            if (packet.packet_number > largest_packet_number) {
+                largest_packet_number = packet.packet_number;
+            }
             // If the packet is already received, resend ACK
             if (received[index]) {
                 // printf("Duplicate packet %u received. Sending ACK.\n", packet.packet_number);
@@ -148,11 +150,12 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
 
             // Send ACK 
             send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
+            
 
             // Write in-order packets to the file and slide the window
-            while (received[next_expected % WINDOW_SIZE]) {
-                int write_index = next_expected % WINDOW_SIZE;
-                printf("index %d", write_index);
+            while (received[next_expected % window_size]) {
+                int write_index = next_expected % window_size;
+                // printf("index %d", write_index);
                 if (buffer[write_index].packet_number == 0){
                     strncpy(filename, buffer[write_index].data, buffer[write_index].data_size);
                     printf("Filename: %s, packet_number:  %u, index: %d \n", filename, buffer[write_index].packet_number, index);
@@ -173,12 +176,12 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
                 }
                 memset(&buffer[write_index], 0, sizeof(buffer[write_index]));
                 received[write_index] = 0;
-                // printf("base: %u", base);
+                printf("base: %u", base);
                 next_expected++;
                 base = next_expected;
             }
-            // while (received[base % WINDOW_SIZE]) {
-            //     int write_index = base % WINDOW_SIZE;
+            // while (received[base % window_size]) {
+            //     int write_index = base % window_size;
             //     fwrite(buffer[write_index].data, 1, buffer[write_index].data_size, fp);
             //     // printf("Packet %u written to file.\n", next_expected);
             //     received[write_index] = 0;
@@ -189,13 +192,14 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
             // }
 
         } else {
-            // printf("Out-of-window packet %u received. Ignoring. base is: %d \n", packet.packet_number, base);
+            printf("Out-of-window packet %u received. Ignoring. base is: %d \n", packet.packet_number, base);
             if (packet.packet_number < base) {
                 send_ack_packet(ack_sock, ack_con, packet.packet_number, 1);
             }
         }
-
-        
+        if (next_expected < largest_packet_number) {
+            send_ack_packet(ack_sock, ack_con, next_expected, 0); //sending nack for the lowest packet number not received
+        }
     }
 
     fclose(fp);
@@ -216,6 +220,9 @@ void receive_file(int sockfd, int ack_sock, struct sockaddr_in addr_con, struct 
 
 
 int main() {
+    int window_size;
+    printf("Enter window size: "); 
+    scanf("%d", &window_size);
     int sockfd, ack_sock;
     struct sockaddr_in addr_con, ack_con;
     // Create socket
@@ -248,7 +255,7 @@ int main() {
     ack_con.sin_port = htons(ACK_PORT_NO);
     ack_con.sin_addr.s_addr = inet_addr(IP_ADDRESS);
     printf("Waiting for file...\n");
-    receive_file(sockfd, ack_sock, addr_con, ack_con);
+    receive_file(sockfd, ack_sock, addr_con, ack_con, window_size);
 
     close(sockfd);
     close(ack_sock);
